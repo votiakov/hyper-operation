@@ -28,6 +28,20 @@ module Hyperloop
       end
     end
 
+    def self.disconnect(*channels)
+      channels.each do |channel|
+        if channel.is_a? Class
+          IncomingBroadcast.disconnect_from(channel.name)
+        elsif channel.is_a?(String) || channel.is_a?(Array)
+          IncomingBroadcast.disconnect_from(*channel)
+        elsif channel.id
+          IncomingBroadcast.disconnect_from(channel.class.name, channel.id)
+        else
+          raise "cannot connect to model before it has been saved"
+        end
+      end
+    end
+
     def self.connect_session
       connect(['Hyperloop::Session', ClientDrivers.opts[:id].split('-').last])
     end
@@ -45,6 +59,12 @@ module Hyperloop
       def self.add_connection(channel_name, id = nil)
         channel_string = "#{channel_name}#{'-'+id.to_s if id}"
         open_channels << channel_string
+        channel_string
+      end
+
+      def self.remove_connection(channel_name, id = nil)
+        channel_string = "#{channel_name}#{'-'+id.to_s if id}"
+        open_channels.delete channel_string
         channel_string
       end
 
@@ -82,6 +102,26 @@ module Hyperloop
           end
         else
           HTTP.get(ClientDrivers.polling_path(:subscribe, channel_string))
+        end
+      end
+
+      def self.disconnect_from(channel_name, id = nil)
+        channel_string = remove_connection(channel_name, id)
+        if ClientDrivers.opts[:transport] == :pusher
+          channel = "#{ClientDrivers.opts[:channel]}-#{channel_string}"
+          %x{
+            var channel = #{ClientDrivers.opts[:pusher_api]}.unsubscribe(#{channel.gsub('::', '==')});
+          }
+        elsif ClientDrivers.opts[:transport] == :action_cable
+          channel = "#{ClientDrivers.opts[:channel]}-#{channel_string}"
+          %x{
+            var foundChannel = #{Hyperloop.action_cable_consumer}.subscriptions.subscriptions.find( function(e) {
+              return JSON.parse(e.identifier).hyperloop_channel == #{channel_string}
+            } );
+            if (foundChannel) { #{Hyperloop.action_cable_consumer}.subscriptions.remove(foundChannel); }
+          }
+        else
+          HTTP.get(ClientDrivers.polling_path(:unsubscribe, channel_string))
         end
       end
     end
